@@ -676,7 +676,7 @@ static struct pingpong *ex_init_ctx(struct ibv_device *ib_dev, int size,
     ctx->rx_depth = rx_depth;
     ctx->routs    = rx_depth;
 
-    ctx->buf = malloc(roundup(1024*PACKETTS, page_size)); // EDITED
+    ctx->buf = malloc(roundup(1024*PACKETS, page_size)); // EDITED
     if (!ctx->buf) {
         fprintf(stderr, "Couldn't allocate work buf.\n");
         return NULL;
@@ -970,7 +970,8 @@ int main(int argc, char *argv[])
 	else
 	{
 		//Server: experiments
-		for(int i = 0; i < EXPERIMENTS: i++)
+		int i;
+		for(i = 0; i < EXPERIMENTS: i++)
 			ex_post_recv(ctx, ctx->rx_depth, pkt_size[i]);
 		
 	}
