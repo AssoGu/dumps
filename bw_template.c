@@ -612,7 +612,7 @@ static void usage(const char *argv0)
 }
 
 #define EXPERIMENTS	10
-#define PACKETS 	1000
+#define PACKETS 	10
 #define ACK_SIZE	1
 
 
@@ -682,7 +682,7 @@ static struct pingpong *ex_init_ctx(struct ibv_device *ib_dev, int size,
         return NULL;
     }
 
-    memset(ctx->buf, 0x7b + is_server, 1024*PACKETTS); // EDITED
+    memset(ctx->buf, 0x7b + is_server, 1024*PACKETS); // EDITED
 
     ctx->context = ibv_open_device(ib_dev);
     if (!ctx->context) {
@@ -724,8 +724,8 @@ static struct pingpong *ex_init_ctx(struct ibv_device *ib_dev, int size,
                 .send_cq = ctx->cq,
                 .recv_cq = ctx->cq,
                 .cap     = {
-                        .max_send_wr  = tx_depth,
-                        .max_recv_wr  = rx_depth,
+                        .max_send_wr  = tx_depth*20, // edited
+                        .max_recv_wr  = rx_depth*20, // edited
                         .max_send_sge = 1,
                         .max_recv_sge = 1
                 },
@@ -774,8 +774,8 @@ int main(int argc, char *argv[])
     int                      port = 12345;
     int                      ib_port = 1;
     enum ibv_mtu             mtu = IBV_MTU_2048;
-    int                      rx_depth = PACKETS; //EDITED
-    int                      tx_depth = PACKETS;//EDITED
+    int                      rx_depth = PACKETS + 1; //EDITED
+    int                      tx_depth = PACKETS + 1;//EDITED
     int                      iters = 1000;
     int                      use_event = 0;
     int                      size = 1; // pkt size
@@ -905,7 +905,7 @@ int main(int argc, char *argv[])
     if (!ctx)
         return 1;
 
-    ctx->routs = pp_post_recv(ctx, ctx->rx_depth);
+   // ctx->routs = pp_post_recv(ctx, ctx->rx_depth);
     if (ctx->routs < ctx->rx_depth) {
         fprintf(stderr, "Couldn't post receive (%d)\n", ctx->routs);
         return 1;
@@ -988,13 +988,13 @@ int main(int argc, char *argv[])
 				}
 			}
 			//wait for experiment send completion and ACK receive
-			pp_wait_completions(ctx, PACKETS + 1);
-			printf("Client: experiment %d sent, ACK received.\n", cExperiment);
+			if(!pp_wait_completions(ctx, PACKETS + 1))
+				printf("Client: experiment %d sent, ACK received.\n", cExperiment);
 			
 		} else {
 			//wait for experiment receive completion
-			pp_wait_completions(ctx, PACKETS);
-			printf("Server: experiment %d received.\n",cExperiment);
+			if(!pp_wait_completions(ctx, PACKETS))
+				printf("Server: experiment %d received.\n",cExperiment);
 			
 			//post send ACK for experiment completion
 			if (ex_post_send(ctx, ACK_SIZE)) {
@@ -1002,8 +1002,8 @@ int main(int argc, char *argv[])
 				return 1;
 			}
 			//wait for ACK send completion
-			pp_wait_completions(ctx, 1);
-			printf("ACK sent!\n");
+			if(!pp_wait_completions(ctx, 1))
+				printf("ACK sent!\n");
 			
 		}
 
