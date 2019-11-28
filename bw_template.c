@@ -612,6 +612,155 @@ static void usage(const char *argv0)
 }
 
 #define EXPERIMENTS	10
+#define PACKETS 	1000
+#define ACK_SIZE	1
+
+
+//ex-experiment
+//editied functions
+static int ex_post_recv(struct pingpong_context *ctx, int n, int pkt_size)
+{
+	struct ibv_sge list = {
+            .addr	= (uintptr_t) ctx->buf,
+            .length = pkt_size,
+            .lkey	= ctx->mr->lkey
+    };
+    struct ibv_recv_wr wr = {
+            .wr_id	    = PINGPONG_RECV_WRID,
+            .sg_list    = &list,
+            .num_sge    = 1,
+            .next       = NULL
+    };
+    struct ibv_recv_wr *bad_wr;
+    int i;
+
+    for (i = 0; i < n; ++i)
+        if (ibv_post_recv(ctx->qp, &wr, &bad_wr))
+            break;
+
+    return i;
+
+}
+
+static int ex_post_send(struct pingpong_context *ctx, int pkt_size)
+{
+    struct ibv_sge list = {
+            .addr	= (uint64_t)ctx->buf,
+            .length = pkt_size, //EDITED
+            .lkey	= ctx->mr->lkey
+    };
+
+    struct ibv_send_wr *bad_wr, wr = {
+            .wr_id	    = PINGPONG_SEND_WRID,
+            .sg_list    = &list,
+            .num_sge    = 1,
+            .opcode     = IBV_WR_SEND,
+            .send_flags = IBV_SEND_SIGNALED,
+            .next       = NULL
+    };
+
+    return ibv_post_send(ctx->qp, &wr, &bad_wr);
+}
+
+static struct pingpong *ex_init_ctx(struct ibv_device *ib_dev, int size,
+                                            int rx_depth, int tx_depth, int port,
+                                            int use_event, int is_server)
+{
+    struct pingpong_context *ctx;
+
+    ctx = calloc(1, sizeof *ctx);
+    if (!ctx)
+        return NULL;
+
+    ctx->size     = size;
+    ctx->rx_depth = rx_depth;
+    ctx->routs    = rx_depth;
+
+    ctx->buf = malloc(roundup(1024*PACKETTS, page_size)); // EDITED
+    if (!ctx->buf) {
+        fprintf(stderr, "Couldn't allocate work buf.\n");
+        return NULL;
+    }
+
+    memset(ctx->buf, 0x7b + is_server, 1024*PACKETTS); // EDITED
+
+    ctx->context = ibv_open_device(ib_dev);
+    if (!ctx->context) {
+        fprintf(stderr, "Couldn't get context for %s\n",
+                ibv_get_device_name(ib_dev));
+        return NULL;
+    }
+
+    if (use_event) {
+        ctx->channel = ibv_create_comp_channel(ctx->context);
+        if (!ctx->channel) {
+            fprintf(stderr, "Couldn't create completion channel\n");
+            return NULL;
+        }
+    } else
+        ctx->channel = NULL;
+
+    ctx->pd = ibv_alloc_pd(ctx->context);
+    if (!ctx->pd) {
+        fprintf(stderr, "Couldn't allocate PD\n");
+        return NULL;
+    }
+
+    ctx->mr = ibv_reg_mr(ctx->pd, ctx->buf, size, IBV_ACCESS_LOCAL_WRITE);
+    if (!ctx->mr) {
+        fprintf(stderr, "Couldn't register MR\n");
+        return NULL;
+    }
+
+    ctx->cq = ibv_create_cq(ctx->context, rx_depth + tx_depth, NULL,
+            ctx->channel, 0);
+    if (!ctx->cq) {
+        fprintf(stderr, "Couldn't create CQ\n");
+        return NULL;
+    }
+
+    {
+        struct ibv_qp_init_attr attr = {
+                .send_cq = ctx->cq,
+                .recv_cq = ctx->cq,
+                .cap     = {
+                        .max_send_wr  = tx_depth,
+                        .max_recv_wr  = rx_depth,
+                        .max_send_sge = 1,
+                        .max_recv_sge = 1
+                },
+                .qp_type = IBV_QPT_RC
+        };
+
+        ctx->qp = ibv_create_qp(ctx->pd, &attr);
+        if (!ctx->qp)  {
+            fprintf(stderr, "Couldn't create QP\n");
+            return NULL;
+        }
+    }
+
+    {
+        struct ibv_qp_attr attr = {
+                .qp_state        = IBV_QPS_INIT,
+                .pkey_index      = 0,
+                .port_num        = port,
+                .qp_access_flags = IBV_ACCESS_REMOTE_READ |
+                IBV_ACCESS_REMOTE_WRITE
+        };
+
+        if (ibv_modify_qp(ctx->qp, &attr,
+                IBV_QP_STATE              |
+                IBV_QP_PKEY_INDEX         |
+                IBV_QP_PORT               |
+                IBV_QP_ACCESS_FLAGS)) {
+            fprintf(stderr, "Failed to modify QP to INIT\n");
+            return NULL;
+        }
+    }
+
+    return ctx;
+}
+
 
 int main(int argc, char *argv[])
 {
@@ -625,16 +774,17 @@ int main(int argc, char *argv[])
     int                      port = 12345;
     int                      ib_port = 1;
     enum ibv_mtu             mtu = IBV_MTU_2048;
-    int                      rx_depth = 100;
-    int                      tx_depth = 100;
+    int                      rx_depth = PACKETS; //EDITED
+    int                      tx_depth = PACKETS;//EDITED
     int                      iters = 1000;
     int                      use_event = 0;
-    int                      size = 1;
+    int                      size = 1; // pkt size
     int                      sl = 0;
     int                      gidx = -1;
     char                     gid[33];
-
+//******//
 	int						 cExperiment = 0;
+	int pkt_size[11] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024};
 
     srand48(getpid() * time(NULL));
 
@@ -810,31 +960,56 @@ int main(int argc, char *argv[])
         if (pp_connect_ctx(ctx, ib_port, my_dest.psn, mtu, sl, rem_dest, gidx))
             return 1;
 
+	
+	//post receive all experiments
+	if(servername)
+	{
+		//Client : acks
+		ex_post_recv(ctx, EXPERIMENTS, ACK_SIZE);
+	}
+	else
+	{
+		//Server: experiments
+		for(int i = 0; i < EXPERIMENTS: i++)
+			ex_post_recv(ctx, ctx->rx_depth, pkt_size[i]);
+		
+	}
 
 	while(cExperiment < EXPERIMENTS)
 	{
 		if (servername) {
 			int i;
-			for (i = 0; i < iters; i++) {
-				if ((i != 0) && (i % tx_depth == 0)) {
-					pp_wait_completions(ctx, tx_depth);
-				}
-				if (pp_post_send(ctx)) {
-					fprintf(stderr, "Client ouldn't post send\n");
+			//Post send experiment
+			for (i = 0; i < PACKETS; i++) {
+				if (ex_post_send(ctx, pkt_size[cExperiment])) {
+					fprintf(stderr, "Client ouldn't post send(EXPERIMENT)\n");
 					return 1;
 				}
 			}
-			printf("Client: experiment %d sent\n", cExperiment);
+			//wait for experiment send completion and ACK receive
+			pp_wait_completions(ctx, PACKETS + 1);
+			printf("Client: experiment %d sent, ACK received.\n", cExperiment);
+			
 		} else {
-			if (pp_post_send(ctx)) {
-				fprintf(stderr, "Server couldn't post send\n");
+			//wait for experiment receive completion
+			pp_wait_completions(ctx, PACKETS);
+			printf("Server: experiment %d received.\n",cExperiment);
+			
+			//post send ACK for experiment completion
+			if (ex_post_send(ctx, ACK_SIZE)) {
+				fprintf(stderr, "Server couldn't post send (ACK)\n");
 				return 1;
 			}
-			pp_wait_completions(ctx, iters);
-			printf("Server: experiment %d received.\n",cExperiment);
+			//wait for ACK send completion
+			pp_wait_completions(ctx, 1);
+			printf("ACK sent!\n");
+			
 		}
+
+		//init next experiment
+			cExperiment++;
+			ctx->size = pkt_size[cExperiment];
 		
-		cExperiment++;
 	}
     ibv_free_device_list(dev_list);
     free(rem_dest);
